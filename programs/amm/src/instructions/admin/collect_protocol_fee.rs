@@ -5,13 +5,21 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{Token, TokenAccount};
 #[derive(Accounts)]
 pub struct CollectProtocolFee<'info> {
-    /// Only admin can collect fee now
-    #[account(address = crate::admin::id())]
+    /// Only admin or config owner can collect fee now
+    #[account(
+        constraint = (owner.key() == amm_config.owner || owner.key() == crate::admin::id())
+    )]
     pub owner: Signer<'info>,
 
     /// Pool state stores accumulated protocol fee amount
     #[account(mut)]
     pub pool_state: AccountLoader<'info, PoolState>,
+
+    /// Amm config account stores owner
+    #[account(
+        address = pool_state.load()?.amm_config
+    )]
+    pub amm_config: Account<'info, AmmConfig>,
 
     /// The address that holds pool tokens for token_0
     #[account(
@@ -56,15 +64,6 @@ pub fn collect_protocol_fee(
     pool_state.protocol_fees_token_1 = pool_state
         .protocol_fees_token_1
         .checked_sub(amount_1)
-        .unwrap();
-
-    pool_state.total_fees_claimed_token_0 = pool_state
-        .total_fees_claimed_token_0
-        .checked_add(amount_0)
-        .unwrap();
-    pool_state.total_fees_claimed_token_1 = pool_state
-        .total_fees_claimed_token_1
-        .checked_add(amount_1)
         .unwrap();
 
     transfer_from_pool_vault_to_user(
