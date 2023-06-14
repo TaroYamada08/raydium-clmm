@@ -5,11 +5,11 @@ use crate::libraries::{
     full_math::MulDiv,
     liquidity_math, swap_math, tick_array_bit_map, tick_math,
 };
+use crate::states::*;
 use crate::util::*;
-use crate::{states::*, util};
 use anchor_lang::prelude::*;
 use anchor_spl::token::Token;
-use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
+use anchor_spl::token_interface::TokenAccount;
 use std::cell::RefMut;
 use std::collections::VecDeque;
 #[cfg(feature = "enable-log")]
@@ -45,27 +45,12 @@ pub struct SwapSingle<'info> {
     #[account(mut)]
     pub output_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    /// The mint of token vault 0
-    #[account(
-            address = input_vault.mint
-        )]
-    pub input_vault_mint: Box<InterfaceAccount<'info, Mint>>,
-
-    /// The mint of token vault 1
-    #[account(
-            address = output_vault.mint
-        )]
-    pub output_vault_mint: Box<InterfaceAccount<'info, Mint>>,
-
     /// The program account for the most recent oracle observation
     #[account(mut, address = pool_state.load()?.observation_key)]
     pub observation_state: AccountLoader<'info, ObservationState>,
 
     /// SPL program for token transfers
     pub token_program: Program<'info, Token>,
-
-    /// SPL program 2022 for token transfers
-    pub token_program_2022: Program<'info, Token2022>,
 
     #[account(mut, constraint = tick_array.load()?.pool_id == pool_state.key())]
     pub tick_array: AccountLoader<'info, TickArrayState>,
@@ -87,17 +72,8 @@ pub struct SwapAccounts<'b, 'info> {
     /// The vault token account for output token
     pub output_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    /// The vault mint for input token
-    pub input_vault_mint: Box<InterfaceAccount<'info, Mint>>,
-
-    /// The vault mint for output token
-    pub output_vault_mint: Box<InterfaceAccount<'info, Mint>>,
-
     /// SPL program for token transfers
     pub token_program: Program<'info, Token>,
-
-    /// SPL program for token transfers
-    pub token_program_2022: Program<'info, Token2022>,
 
     /// The factory state to read protocol fees
     pub amm_config: &'b Box<Account<'info, AmmConfig>>,
@@ -601,11 +577,6 @@ pub fn exact_internal<'b, 'info>(
     let input_balance_before = ctx.input_vault.amount;
     let output_balance_before = ctx.output_vault.amount;
 
-    let mut transfer_fee = 0;
-    if is_base_input {
-        transfer_fee = util::get_transfer_fee(&ctx.input_vault_mint, amount_specified).unwrap();
-    }
-
     {
         swap_price_before = ctx.pool_state.load()?.sqrt_price_x64;
         let pool_state = &mut ctx.pool_state.load_mut()?;
@@ -635,7 +606,7 @@ pub fn exact_internal<'b, 'info>(
             pool_state,
             tick_array_states,
             &mut ctx.observation_state.load_mut()?,
-            amount_specified - transfer_fee,
+            amount_specified,
             if sqrt_price_limit_x64 == 0 {
                 if zero_for_one {
                     tick_math::MIN_SQRT_PRICE_X64 + 1
@@ -662,40 +633,32 @@ pub fn exact_internal<'b, 'info>(
             ErrorCode::TooSmallInputOrOutputAmount
         );
     }
-    let (token_account_0, token_account_1, vault_0, vault_1, vault_0_mint, vault_1_mint) =
-        if zero_for_one {
-            (
-                ctx.input_token_account.clone(),
-                ctx.output_token_account.clone(),
-                ctx.input_vault.clone(),
-                ctx.output_vault.clone(),
-                ctx.input_vault_mint.clone(),
-                ctx.output_vault_mint.clone(),
-            )
-        } else {
-            (
-                ctx.output_token_account.clone(),
-                ctx.input_token_account.clone(),
-                ctx.output_vault.clone(),
-                ctx.input_vault.clone(),
-                ctx.output_vault_mint.clone(),
-                ctx.input_vault_mint.clone(),
-            )
-        };
+    let (token_account_0, token_account_1, vault_0, vault_1) = if zero_for_one {
+        (
+            ctx.input_token_account.clone(),
+            ctx.output_token_account.clone(),
+            ctx.input_vault.clone(),
+            ctx.output_vault.clone(),
+        )
+    } else {
+        (
+            ctx.output_token_account.clone(),
+            ctx.input_token_account.clone(),
+            ctx.output_vault.clone(),
+            ctx.input_vault.clone(),
+        )
+    };
 
     if zero_for_one {
-        if !is_base_input {
-            transfer_fee = util::get_transfer_inverse_fee(&ctx.input_vault_mint, amount_0).unwrap();
-        }
         //  x -> y, deposit x token from user to pool vault.
         transfer_from_user_to_pool_vault(
             &ctx.signer,
             &token_account_0,
             &vault_0,
-            &vault_0_mint,
+            None,
             &ctx.token_program,
-            &ctx.token_program_2022,
-            amount_0 + transfer_fee,
+            None,
+            amount_0,
         )?;
         if vault_1.amount <= amount_1 {
             // freeze pool, disable all instructions
@@ -706,23 +669,20 @@ pub fn exact_internal<'b, 'info>(
             &ctx.pool_state,
             &vault_1,
             &token_account_1,
-            &vault_1_mint,
+            None,
             &ctx.token_program,
-            &ctx.token_program_2022,
+            None,
             amount_1,
         )?;
     } else {
-        if !is_base_input {
-            transfer_fee = util::get_transfer_inverse_fee(&ctx.input_vault_mint, amount_1).unwrap();
-        }
         transfer_from_user_to_pool_vault(
             &ctx.signer,
             &token_account_1,
             &vault_1,
-            &vault_1_mint,
+            None,
             &ctx.token_program,
-            &ctx.token_program_2022,
-            amount_1 + transfer_fee,
+            None,
+            amount_1,
         )?;
         if vault_0.amount <= amount_0 {
             // freeze pool, disable all instructions
@@ -732,9 +692,9 @@ pub fn exact_internal<'b, 'info>(
             &ctx.pool_state,
             &vault_0,
             &token_account_0,
-            &vault_0_mint,
+            None,
             &ctx.token_program,
-            &ctx.token_program_2022,
+            None,
             amount_0,
         )?;
     }
@@ -780,7 +740,7 @@ pub fn swap<'a, 'b, 'c, 'info>(
     sqrt_price_limit_x64: u128,
     is_base_input: bool,
 ) -> Result<()> {
-    let amount_result = exact_internal(
+    let amount = exact_internal(
         &mut SwapAccounts {
             signer: ctx.accounts.payer.clone(),
             amm_config: &ctx.accounts.amm_config,
@@ -788,10 +748,7 @@ pub fn swap<'a, 'b, 'c, 'info>(
             output_token_account: ctx.accounts.output_token_account.clone(),
             input_vault: ctx.accounts.input_vault.clone(),
             output_vault: ctx.accounts.output_vault.clone(),
-            input_vault_mint: ctx.accounts.input_vault_mint.clone(),
-            output_vault_mint: ctx.accounts.output_vault_mint.clone(),
             token_program: ctx.accounts.token_program.clone(),
-            token_program_2022: ctx.accounts.token_program_2022.clone(),
             pool_state: &mut ctx.accounts.pool_state,
             tick_array_state: &mut ctx.accounts.tick_array,
             observation_state: &mut ctx.accounts.observation_state,
@@ -802,15 +759,13 @@ pub fn swap<'a, 'b, 'c, 'info>(
         is_base_input,
     )?;
     if is_base_input {
-        require_gte!(
-            amount_result,
-            other_amount_threshold,
+        require!(
+            amount >= other_amount_threshold,
             ErrorCode::TooLittleOutputReceived
         );
     } else {
-        require_gte!(
-            other_amount_threshold,
-            amount_result,
+        require!(
+            amount <= other_amount_threshold,
             ErrorCode::TooMuchInputPaid
         );
     }
