@@ -113,8 +113,10 @@ pub struct PoolState {
     pub status: u8,
     /// Fee on which token (0 = FromInput, 1 = Token0Only, 2 = Token1Only)
     pub fee_on: u8,
+    /// Client-supplied index seed (u16 LE) for permissioned pools; [0,0] = legacy pool.
+    pub seed_index: [u8; 2],
     /// Leave blank for future use
-    pub padding: [u8; 6],
+    pub padding: [u8; 4],
 
     pub reward_infos: [RewardInfo; REWARD_NUM],
 
@@ -167,12 +169,17 @@ impl PoolState {
         + 8 * 14 
         + 8 * 32;
 
-    pub fn seeds(&self) -> [&[u8]; 5] {
+    pub fn seeds(&self) -> [&[u8]; 6] {
         [
             &POOL_SEED.as_bytes(),
             self.amm_config.as_ref(),
             self.token_mint_0.as_ref(),
             self.token_mint_1.as_ref(),
+            if self.seed_index == [0, 0] {
+                &[]
+            } else {
+                self.seed_index.as_ref()
+            },
             self.bump.as_ref(),
         ]
     }
@@ -219,7 +226,8 @@ impl PoolState {
         self.padding5 = [0; 4];
         self.status = 0;
         self.fee_on = collect_fee_on.to_u8();
-        self.padding = [0; 6];
+        self.seed_index = [0, 0];
+        self.padding = [0; 4];
         self.tick_array_bitmap = [0; 16];
         self.padding6 = [0; 4];
         self.fund_fees_token_0 = 0;
@@ -232,6 +240,11 @@ impl PoolState {
         self.observation_key = observation_state_key;
 
         Ok(())
+    }
+
+    /// Store the u16 index seed used in this pool's PDA (permissioned pools only).
+    pub fn set_seed_index(&mut self, index: u16) {
+        self.seed_index = index.to_le_bytes();
     }
 
     pub fn initialize_reward(
@@ -1333,7 +1346,10 @@ pub mod pool_test {
 
             assert!(claimable > 0);
             assert!(emitted_ceil >= claimable, "ceil keeps pool solvent");
-            assert!(emitted_floor < claimable, "floor would undercount -> claim DoS");
+            assert!(
+                emitted_floor < claimable,
+                "floor would undercount -> claim DoS"
+            );
         }
     }
 
@@ -1891,7 +1907,8 @@ pub mod pool_test {
             ];
             let status: u8 = 0x1b;
             let fee_on: u8 = 0x19;
-            let padding: [u8; 6] = [0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
+            let seed_index: [u8; 2] = [0x12, 0x13];
+            let padding: [u8; 4] = [0x14, 0x15, 0x16, 0x17];
             // RewardInfo
             let reward_state: u8 = 0x1c;
             let open_time: u64 = 0x123456789abc0def;
@@ -2035,8 +2052,10 @@ pub mod pool_test {
             offset += 1;
             pool_data[offset..offset + 1].copy_from_slice(&fee_on.to_le_bytes());
             offset += 1;
-            pool_data[offset..offset + 6].copy_from_slice(&padding);
-            offset += 6;
+            pool_data[offset..offset + 2].copy_from_slice(&seed_index);
+            offset += 2;
+            pool_data[offset..offset + 4].copy_from_slice(&padding);
+            offset += 4;
             pool_data[offset..offset + RewardInfo::LEN * REWARD_NUM]
                 .copy_from_slice(&reward_info_datas);
             offset += RewardInfo::LEN * REWARD_NUM;
@@ -2116,6 +2135,8 @@ pub mod pool_test {
             assert_eq!(unpack_status, status);
             let unpack_fee_on = unpack_data.fee_on;
             assert_eq!(unpack_fee_on, fee_on);
+            let unpack_seed_index = unpack_data.seed_index;
+            assert_eq!(unpack_seed_index, seed_index);
             let unpack_padding = unpack_data.padding;
             assert_eq!(unpack_padding, padding);
 
@@ -2161,5 +2182,69 @@ pub mod pool_test {
             let unpack_padding2 = unpack_data.padding2;
             assert_eq!(unpack_padding2, padding2);
         }
+    }
+}
+
+#[cfg(test)]
+mod seed_index_tests {
+    use super::*;
+    use anchor_lang::prelude::Pubkey;
+
+    fn base_pool() -> PoolState {
+        let mut p = PoolState::default();
+        p.amm_config = Pubkey::new_unique();
+        p.token_mint_0 = Pubkey::new_unique();
+        p.token_mint_1 = Pubkey::new_unique();
+        p
+    }
+
+    #[test]
+    fn legacy_seeds_match_four_seed_derivation() {
+        let mut p = base_pool();
+        // legacy: seed_index left as [0, 0]
+        let (expected, bump) = Pubkey::find_program_address(
+            &[
+                POOL_SEED.as_bytes(),
+                p.amm_config.as_ref(),
+                p.token_mint_0.as_ref(),
+                p.token_mint_1.as_ref(),
+            ],
+            &crate::id(),
+        );
+        p.bump = [bump];
+        assert_eq!(p.seed_index, [0, 0]);
+        assert_eq!(p.key(), expected);
+    }
+
+    #[test]
+    fn seeded_key_matches_five_seed_derivation_and_differs_from_legacy() {
+        let mut p = base_pool();
+        let index: u16 = 7;
+        let (seeded, bump) = Pubkey::find_program_address(
+            &[
+                POOL_SEED.as_bytes(),
+                p.amm_config.as_ref(),
+                p.token_mint_0.as_ref(),
+                p.token_mint_1.as_ref(),
+                &index.to_le_bytes(),
+            ],
+            &crate::id(),
+        );
+        p.bump = [bump];
+        p.set_seed_index(index);
+        assert_eq!(p.seed_index, index.to_le_bytes());
+        assert_eq!(p.key(), seeded);
+
+        // legacy derivation of the same triple is a different address
+        let (legacy, _) = Pubkey::find_program_address(
+            &[
+                POOL_SEED.as_bytes(),
+                p.amm_config.as_ref(),
+                p.token_mint_0.as_ref(),
+                p.token_mint_1.as_ref(),
+            ],
+            &crate::id(),
+        );
+        assert_ne!(seeded, legacy);
     }
 }
