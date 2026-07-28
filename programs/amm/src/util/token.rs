@@ -13,10 +13,9 @@ use anchor_spl::token::{self, Token};
 use anchor_spl::token_2022::spl_token_2022::{
     self,
     extension::{
-        default_account_state::DefaultAccountState,
-        metadata_pointer,
-        transfer_fee::{TransferFeeConfig, MAX_FEE_BASIS_POINTS},
-        BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+        default_account_state::DefaultAccountState, metadata_pointer,
+        transfer_fee::TransferFeeConfig, BaseStateWithExtensions, ExtensionType,
+        StateWithExtensions,
     },
     state::AccountState,
 };
@@ -26,15 +25,6 @@ use anchor_spl::token_2022::{
 };
 use anchor_spl::token_2022_extensions::spl_token_metadata_interface;
 use anchor_spl::token_interface::{initialize_mint2, InitializeMint2, Mint, TokenInterface};
-use std::collections::HashSet;
-const MINT_WHITELIST: [&'static str; 6] = [
-    "HVbpJAQGNpkgBaYBZQBR1t7yFdvaYVp2vCQQfKKEN4tM",
-    "Crn4x1Y2HUKko7ox2EZMT6N2t2ZyH7eKtwkBGVnhEq1g",
-    "FrBfWJ4qE5sCzKm3k3JaAtqZcXUh4LvJygDeketsrsH4",
-    "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
-    "DAUcJBg4jSpVoEzASxYzdqHMUN8vuTpQyG2TvDcCHfZg",
-    "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
-];
 
 pub mod superstate_allowlist {
     use super::{pubkey, Pubkey};
@@ -206,26 +196,21 @@ pub fn get_transfer_inverse_fee(
     let fee = if let Ok(transfer_fee_config) = mint.get_extension::<TransferFeeConfig>() {
         let epoch = get_recent_epoch()?;
 
-        let transfer_fee = transfer_fee_config.get_epoch_fee(epoch);
-        if u16::from(transfer_fee.transfer_fee_basis_points) == MAX_FEE_BASIS_POINTS {
-            u64::from(transfer_fee.maximum_fee)
-        } else {
-            let transfer_fee = transfer_fee_config
-                .calculate_inverse_epoch_fee(epoch, post_fee_amount)
-                .ok_or(ErrorCode::CalculateOverflow)?;
-            let transfer_fee_for_check = transfer_fee_config
-                .calculate_epoch_fee(
-                    epoch,
-                    post_fee_amount
-                        .checked_add(transfer_fee)
-                        .ok_or(ErrorCode::CalculateOverflow)?,
-                )
-                .ok_or(ErrorCode::CalculateOverflow)?;
-            if transfer_fee != transfer_fee_for_check {
-                return err!(ErrorCode::TransferFeeCalculateNotMatch);
-            }
-            transfer_fee
+        let transfer_fee = transfer_fee_config
+            .calculate_inverse_epoch_fee(epoch, post_fee_amount)
+            .ok_or(ErrorCode::CalculateOverflow)?;
+        let transfer_fee_for_check = transfer_fee_config
+            .calculate_epoch_fee(
+                epoch,
+                post_fee_amount
+                    .checked_add(transfer_fee)
+                    .ok_or(ErrorCode::CalculateOverflow)?,
+            )
+            .ok_or(ErrorCode::CalculateOverflow)?;
+        if transfer_fee != transfer_fee_for_check {
+            return err!(ErrorCode::TransferFeeCalculateNotMatch);
         }
+        transfer_fee
     } else {
         0
     };
@@ -289,10 +274,6 @@ pub fn is_supported_mint(
 ) -> Result<bool> {
     let mint_info = mint_account.to_account_info();
     if *mint_info.owner == Token::id() {
-        return Ok(true);
-    }
-    let mint_whitelist: HashSet<&str> = MINT_WHITELIST.into_iter().collect();
-    if mint_whitelist.contains(mint_account.key().to_string().as_str()) {
         return Ok(true);
     }
     if mint_associated_is_initialized {

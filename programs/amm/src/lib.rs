@@ -28,9 +28,11 @@ declare_id!("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
 
 pub mod admin {
     use super::{pubkey, Pubkey};
+    #[cfg(feature = "localnet")]
+    pub const ID: Pubkey = pubkey!("FgKXkqnBaPWQS4mG5F7BhvfjCpVTacNSrBqW18QotM3k");
     #[cfg(feature = "devnet")]
     pub const ID: Pubkey = pubkey!("DRayqG9RXYi8WHgWEmRQGrUWRWbhjYWYkCRJDd6JBBak");
-    #[cfg(not(feature = "devnet"))]
+    #[cfg(all(not(feature = "devnet"), not(feature = "localnet")))]
     pub const ID: Pubkey = pubkey!("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
 }
 
@@ -146,7 +148,6 @@ pub mod raydium_clmm {
     /// * `reduction_factor` - Dynamic fee rate decrement rate, used for volatility reference decay
     /// * `dynamic_fee_control` - Factor used to scale the dynamic fee component
     /// * `max_volatility_accumulator` - Maximum value for the volatility accumulator
-    /// * `create_pool_authority` - The new authority pubkey that can use this dynamic fee config to create pools
     pub fn update_dynamic_fee_config(
         ctx: Context<UpdateDynamicFeeConfig>,
         filter_period: u16,
@@ -163,6 +164,22 @@ pub mod raydium_clmm {
             dynamic_fee_control,
             max_volatility_accumulator,
         )
+    }
+
+    /// Create a permission PDA granting `permission_authority` the right to
+    /// call permissioned instructions. Admin-only.
+    pub fn create_permission_pda(ctx: Context<CreatePermissionPda>) -> Result<()> {
+        instructions::create_permission_pda(ctx)
+    }
+
+    /// Close a permission PDA and refund rent to the admin owner. Admin-only.
+    pub fn close_permission_pda(ctx: Context<ClosePermissionPda>) -> Result<()> {
+        instructions::close_permission_pda(ctx)
+    }
+
+    /// Close a support-mint-associated PDA and refund rent. Admin-only.
+    pub fn close_support_mint_associated(ctx: Context<CloseSupportMintAssociated>) -> Result<()> {
+        instructions::close_support_mint_associated(ctx)
     }
 
     /// Creates a pool for the given token pair and the initial price
@@ -192,6 +209,23 @@ pub mod raydium_clmm {
         customizable_params: CreateCustomizableParams,
     ) -> Result<()> {
         instructions::create_customizable_pool(ctx, customizable_params)
+    }
+
+    /// Creates a pool for the given token pair with a client-supplied u16 seed
+    /// index, allowing multiple pools per pair. Caller must hold a permission PDA.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The context of accounts
+    /// * `customizable_params` - the customizable parameters
+    /// * `seed_index` - non-zero u16 folded into the pool PDA seeds
+    ///
+    pub fn create_permissioned_pool<'a, 'b, 'c: 'info, 'info>(
+        ctx: Context<'a, 'b, 'c, 'info, CreatePermissionedPool<'info>>,
+        customizable_params: CreateCustomizableParams,
+        seed_index: u16,
+    ) -> Result<()> {
+        instructions::create_permissioned_pool(ctx, customizable_params, seed_index)
     }
 
     /// Update pool status for given value

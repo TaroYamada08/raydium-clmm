@@ -229,6 +229,41 @@ export class PDAUtils {
       this.programId,
     );
   }
+
+  /**
+   * Get Permission PDA
+   * Seeds: ["permission", authority]
+   */
+  async getPermissionPDA(authority: PublicKey): Promise<[PublicKey, number]> {
+    return await PublicKey.findProgramAddress(
+      [Buffer.from("permission"), authority.toBuffer()],
+      this.programId,
+    );
+  }
+
+  /**
+   * Get Permissioned Pool State PDA
+   * Seeds: ["pool", amm_config, token_mint_0, token_mint_1, seed_index (u16 LE)]
+   */
+  async getPermissionedPoolPDA(
+    ammConfig: PublicKey,
+    tokenMint0: PublicKey,
+    tokenMint1: PublicKey,
+    seedIndex: number,
+  ): Promise<[PublicKey, number]> {
+    const seedIndexBuffer = Buffer.alloc(2);
+    seedIndexBuffer.writeUInt16LE(seedIndex, 0); // LE to match seed_index.to_le_bytes()
+    return await PublicKey.findProgramAddress(
+      [
+        Buffer.from("pool"),
+        ammConfig.toBuffer(),
+        tokenMint0.toBuffer(),
+        tokenMint1.toBuffer(),
+        seedIndexBuffer,
+      ],
+      this.programId,
+    );
+  }
 }
 
 /**
